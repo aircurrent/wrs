@@ -1,57 +1,69 @@
 import numpy as np
+import os
 
 from ..util import is_binary_file
 
 # define a numpy datatype for the STL file
-_stl_dtype = np.dtype([('normals', np.float32, (3)), ('vertices', np.float32, (3, 3)), ('attributes', np.uint16)])
-_stl_dtype_header = np.dtype([('header', np.void, 80), ('face_count', np.int32)])
+_stl_dtype_header = np.dtype([('header', np.void, 80), ('face_count', np.uint32)])
+_stl_dtype = np.dtype([
+    ('normals', np.float32, (3,)),
+    ('vertices', np.float32, (3, 3)),
+    ('attr', np.uint16)
+])
 
 
 def load_stl(file_obj, file_type=None):
-    if 'b' not in file_obj.mode:
-        raise
-    if is_binary_file(file_obj):
-        return load_stl_binary(file_obj)
-    else:
+    # file_type 这个参数可以不用，但必须接
+    start = file_obj.read(512)
+    file_obj.seek(0)
+    s = start.lstrip().lower()
+
+    if s.startswith(b"solid") and (b"facet" in s):
         return load_stl_ascii(file_obj)
+    return load_stl_binary(file_obj)
 
 
-def load_stl_binary(file_obj):
-    """
-    Load a binary STL file into a trimesh object.
-    Uses a single main struct.unpack call, and is significantly faster
-    than looping methods or ASCII STL.
-    :param file_obj:
-    :return:
-    """
-    header = np.frombuffer(file_obj.read(84), dtype=_stl_dtype_header)
-    # now we check the axis_length from the header versus the axis_length of the file
-    # data_start should always be position 84, but hard coding that felt ugly
-    data_start = file_obj.tell()
-    # this seeks to the end_type of the file (position 0, relative to the end_type of the file 'whence=2')
-    file_obj.seek(0, 2)
-    # we save the location of the end_type of the file and seek back to where we started from
-    data_end = file_obj.tell()
+def load_stl_binary(file_obj, file_type=None):
+    raw = file_obj.read(84)
+    if len(raw) != 84:
+        raise ValueError("STL header too short (need 84 bytes).")
+
+    header = np.frombuffer(raw, dtype=_stl_dtype_header, count=1)[0]
+    # force scalar
+    header_fc = int(np.asarray(header['face_count']).reshape(-1)[0])
+
+    data_start = file_obj.tell()  # 84
+    file_obj.seek(0, os.SEEK_END)
+    file_size = file_obj.tell()
     file_obj.seek(data_start)
-    # the binary format has a rigidly defined structure, and if the axis_length
-    # of the file doesn't match the header, the loaded version is almost
-    # certainly going to be garbage. 
-    data_ok = (data_end - data_start) == (header['face_count'] * _stl_dtype.itemsize)
 
-    # this check is to see if this really is a binary STL file. 
-    # if we don't do this and try to load a file that isn't structured properly 
-    # the struct.unpack call uses 100% memory until the whole thing crashes, 
-    # so it's much better to raise an exception here. 
-    if not data_ok:
-        raise ValueError('Binary STL has incorrect axis_length in header!')
-    # all of our vertices will be loaded in order due to the STL format,
-    # so faces are just sequential indices reshaped. 
-    faces = np.arange(header['face_count'] * 3).reshape((-1, 3))
-    blob = np.frombuffer(file_obj.read(), dtype=_stl_dtype)
-    result = {'vertices': blob['vertices'].reshape((-1, 3)),
-              'face_normals': blob['normals'].reshape((-1, 3)),
-              'faces': faces}
-    return result
+    # binary STL: 50 bytes per triangle
+    payload = file_size - 84
+    if payload < 0:
+        raise ValueError("Invalid STL size.")
+    calc_fc = payload // 50
+
+    # prefer header if exact; else fall back to file size
+    if file_size == 84 + 50 * header_fc:
+        face_count = header_fc
+    elif file_size == 84 + 50 * calc_fc:
+        face_count = int(calc_fc)
+    else:
+        raise ValueError(
+            f"Not a valid binary STL layout: file_size={file_size}, "
+            f"header_fc={header_fc} (expects {84+50*header_fc}), "
+            f"calc_fc={calc_fc} (expects {84+50*calc_fc})."
+        )
+
+    blob = np.frombuffer(file_obj.read(face_count * _stl_dtype.itemsize),
+                         dtype=_stl_dtype, count=face_count)
+
+    faces = np.arange(face_count * 3, dtype=np.int32).reshape((-1, 3))
+    return {
+        'vertices': blob['vertices'].reshape((-1, 3)),
+        'face_normals': blob['normals'].reshape((-1, 3)),
+        'faces': faces
+    }
 
 
 def load_stl_ascii(file_obj):
