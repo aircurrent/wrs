@@ -237,6 +237,8 @@ class StaticGeometricModel(object):
         return copy.deepcopy(self)
 
 
+
+
 class WireFrameModel(StaticGeometricModel):
 
     def __init__(self,

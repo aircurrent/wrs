@@ -34,11 +34,7 @@ class GP7(mi.ManipulatorInterface):
         # If use_mesh=False or files are missing, the model remains runnable (stickmodel).
         # --------
         def _try_set_cmodel(link_obj, filename, rgba=None, loc_pos=None, loc_rotmat=None):
-            if not use_mesh:
-                print("[mesh] use_mesh=False -> skip", filename)
-                return
             fpath = os.path.join(current_file_dir, "meshes", filename)
-            print("[mesh] trying:", fpath, "exists=", os.path.exists(fpath), "link=", type(link_obj))
             if not os.path.exists(fpath):
                 return
             link_obj.cmodel = mcm.CollisionModel(initor=fpath, name=os.path.splitext(filename)[0])
