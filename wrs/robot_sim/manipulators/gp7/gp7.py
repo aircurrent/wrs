@@ -28,7 +28,8 @@ class GP7(mi.ManipulatorInterface):
         current_file_dir = os.path.dirname(__file__)
 
         # --------
-        # Optional meshes (place your GP7 mesh files under: <this_dir>/meshes/
+        # Optional meshes (place your
+        # GP7 mesh files under: <this_dir>/meshes/
         # Suggested filenames (you may rename as needed, but keep mapping consistent):
         #   base.stl, s_axis.stl, l_axis.stl, u_axis.stl, r_axis.stl, b_axis.stl, t_axis.stl
         # If use_mesh=False or files are missing, the model remains runnable (stickmodel).
@@ -86,6 +87,13 @@ class GP7(mi.ManipulatorInterface):
 
         # Finalize chain (build FK/IK structures)
         self.jlc.finalize(ik_solver=ik_solver, identifier_str=name)
+
+        self._loc_tcp_pos = np.array([0.125751, -0.089503, 0.081999])
+        Rx90 = np.array([[1, 0, 0],
+                         [0, 0, -1],
+                         [0, 1, 0]])
+        self._loc_tcp_rotmat = Rx90
+        self._is_gl_tcp_delayed = True
 
         # ----------------
         # Visual / collision meshes
