@@ -16,12 +16,17 @@ q_lft_start = q0
 q_rgt_start = q0
 
 # TCP 位移（m）：世界坐标系下位移
-dp_lft = np.array([0.0, 0.0, -0.08])
-dp_rgt = np.array([0.0, 0.0, -0.08])
+dp_lft = np.array([0.02, 0.03, -0.03])
+dp_rgt = np.array([0.02, 0.03, -0.03])
 # ============================
 
 
 def ensure_ik_ready(robot: GP7_Dual):
+    """确保左右臂都初始化好 IK solver。
+
+    注意：GP7_Dual 内部通过 delegator 切换左右臂。
+    需要分别对两条链 finalize，否则调用 ik() 可能报 "IK solver undefined"。
+    """
     # 左臂
     robot.use_lft()
     robot.delegator.jlc.finalize(ik_solver='n')
@@ -30,6 +35,110 @@ def ensure_ik_ready(robot: GP7_Dual):
     robot.delegator.jlc.finalize(ik_solver='n')
     # 默认回到左臂
     robot.use_lft()
+
+
+def _set_delegator_tcp_for_arm(robot_dual: GP7_Dual, arm: str) -> None:
+    """确保 delegator 的 TCP 与指定 arm 一致。
+
+    经验上：WRS 的某些 dual-arm wrapper 在切 arm 后，delegator 的 _loc_tcp_* 未必
+    自动同步到该 arm 的 TCP 定义，导致 IK 的末端参考系混乱。
+    这里显式把对应 arm 的 TCP 写入 delegator。
+    """
+    if arm not in ("lft", "rgt"):
+        raise ValueError("arm must be 'lft' or 'rgt'")
+
+    if arm == "rgt":
+        tcp_pos = np.asarray(robot_dual._rgt_loc_tcp_pos, dtype=float)
+        tcp_rot = np.asarray(getattr(robot_dual, "_rgt_loc_tcp_rotmat", np.eye(3)), dtype=float)
+    else:
+        tcp_pos = np.asarray(robot_dual._lft_loc_tcp_pos, dtype=float)
+        tcp_rot = np.asarray(getattr(robot_dual, "_lft_loc_tcp_rotmat", np.eye(3)), dtype=float)
+
+    # delegator 在不同版本里可能叫 delegator / _delegator
+    d = getattr(robot_dual, "delegator", None)
+    if d is None:
+        d = getattr(robot_dual, "_delegator")
+
+    # 兼容不同字段命名
+    if hasattr(d, "_loc_tcp_pos"):
+        d._loc_tcp_pos = tcp_pos.copy()
+    if hasattr(d, "loc_tcp_pos"):
+        d.loc_tcp_pos = tcp_pos.copy()
+    if hasattr(d, "_loc_tcp_rotmat"):
+        d._loc_tcp_rotmat = tcp_rot.copy()
+    if hasattr(d, "loc_tcp_rotmat"):
+        d.loc_tcp_rotmat = tcp_rot.copy()
+    if hasattr(d, "_is_gl_tcp_delayed"):
+        d._is_gl_tcp_delayed = True
+
+
+def ik_tcp_via_flange(robot_dual: GP7_Dual,
+                      arm: str,
+                      tgt_pos_tcp: np.ndarray,
+                      tgt_rot_tcp: np.ndarray,
+                      seed_jnt_values: np.ndarray):
+    """用“强制 flange-IK”的方式做 TCP IK（稳定版）。
+
+    关键做法：
+    - 先用 flange->tcp 的固定偏置把 TCP 目标换算成 flange 目标
+    - 临时把 delegator 的 TCP 置零（让 IK/FK 的末端定义锁死为 flange）
+    - 调用 robot_dual.ik 解 flange 目标
+    - 恢复 TCP
+    """
+    if arm == "lft":
+        robot_dual.use_lft()
+    elif arm == "rgt":
+        robot_dual.use_rgt()
+    else:
+        raise ValueError("arm must be 'lft' or 'rgt'")
+
+    _set_delegator_tcp_for_arm(robot_dual, arm)
+
+    d = getattr(robot_dual, "delegator", None)
+    if d is None:
+        d = getattr(robot_dual, "_delegator")
+
+    p_ft = np.asarray(getattr(d, "_loc_tcp_pos", np.zeros(3)), dtype=float).copy()
+    R_ft = np.asarray(getattr(d, "_loc_tcp_rotmat", np.eye(3)), dtype=float).copy()
+
+    tgt_pos_tcp = np.asarray(tgt_pos_tcp, dtype=float)
+    tgt_rot_tcp = np.asarray(tgt_rot_tcp, dtype=float)
+
+    # flange 目标：T_base_flange = T_base_tcp * inv(T_flange_tcp)
+    R_flg_tgt = tgt_rot_tcp @ R_ft.T
+    p_flg_tgt = tgt_pos_tcp - R_flg_tgt @ p_ft
+
+    # 临时置零 TCP：锁定 IK/FK 末端为 flange
+    if hasattr(d, "_loc_tcp_pos"):
+        d._loc_tcp_pos = np.zeros(3)
+    if hasattr(d, "loc_tcp_pos"):
+        d.loc_tcp_pos = np.zeros(3)
+    if hasattr(d, "_loc_tcp_rotmat"):
+        d._loc_tcp_rotmat = np.eye(3)
+    if hasattr(d, "loc_tcp_rotmat"):
+        d.loc_tcp_rotmat = np.eye(3)
+    if hasattr(d, "_is_gl_tcp_delayed"):
+        d._is_gl_tcp_delayed = True
+
+    q = robot_dual.ik(
+        tgt_pos=p_flg_tgt,
+        tgt_rotmat=R_flg_tgt,
+        seed_jnt_values=seed_jnt_values,
+    )
+
+    # 恢复 TCP
+    if hasattr(d, "_loc_tcp_pos"):
+        d._loc_tcp_pos = p_ft
+    if hasattr(d, "loc_tcp_pos"):
+        d.loc_tcp_pos = p_ft
+    if hasattr(d, "_loc_tcp_rotmat"):
+        d._loc_tcp_rotmat = R_ft
+    if hasattr(d, "loc_tcp_rotmat"):
+        d.loc_tcp_rotmat = R_ft
+    if hasattr(d, "_is_gl_tcp_delayed"):
+        d._is_gl_tcp_delayed = True
+
+    return q
 
 
 def build_cartesian_traj_for_arm(robot_dual: GP7_Dual,
@@ -50,6 +159,10 @@ def build_cartesian_traj_for_arm(robot_dual: GP7_Dual,
     else:
         raise ValueError("arm must be 'lft' or 'rgt'")
 
+    # 非常重要：FK 取起点时也要保证 delegator 的 TCP 与当前 arm 一致。
+    # 否则 p0/R0 可能是用“上一只臂的 TCP”算出来的，导致 step=0 也会 IK 失败。
+    _set_delegator_tcp_for_arm(robot_dual, arm)
+
     # 1) 起点 FK：TCP 起点与姿态
     # p0是计算出的tcp相对于世界base坐标系的位置
     p0, R0 = robot_dual.fk(jnt_values=q_start)
@@ -65,22 +178,23 @@ def build_cartesian_traj_for_arm(robot_dual: GP7_Dual,
     q_prev = q_start.copy()
 
     for i, p in enumerate(tcp_pos_list):
-        q = robot_dual.ik(
-            tgt_pos=p,
-            tgt_rotmat=R0,
+        # 注意：WRS 的某些 IK solver 默认按 flange 末端求解，且对 TCP 偏置不自洽。
+        # 这里统一用“TCP目标 -> 换算成flange目标 -> 临时置零TCP -> IK -> 恢复TCP”的稳定路径。
+        q = ik_tcp_via_flange(
+            robot_dual=robot_dual,
+            arm=arm,
+            tgt_pos_tcp=p,
+            tgt_rot_tcp=R0,
             seed_jnt_values=q_prev,
         )
         if q is None:
             raise RuntimeError(f"[IK FAILED] arm={arm}, step={i}, tgt_pos={p}")
 
         # FK 误差验证
+        # 这里 fk() 输出 TCP（与 tgt_pos_tcp 同坐标系），应当与 p 对齐
         p_check, _ = robot_dual.fk(jnt_values=q)
         err = float(np.linalg.norm(np.asarray(p_check) - p))
         print(f"[{arm}] step {i}: FK error = {err:.6e} m")
-
-        p_flange, R_flange = robot_dual.fk(jnt_values=q)
-        tcp_used = R_flange.T @ (np.asarray(p) - np.asarray(p_flange))
-        print("tcp_used(flange):", tcp_used, "norm:", np.linalg.norm(tcp_used))
 
         q_list.append(q)
         q_prev = q
@@ -184,20 +298,6 @@ class DualGP7VizRunner:
 
         self.refresh_all()
         return task.again
-
-    def set_tcp_for_arm(robot_dual, arm: str):
-        if arm == "rgt":
-            tcp_pos = robot_dual._rgt_loc_tcp_pos
-            tcp_rot = getattr(robot_dual, "_rgt_loc_tcp_rotmat", np.eye(3))
-        else:
-            tcp_pos = robot_dual._lft_loc_tcp_pos
-            tcp_rot = getattr(robot_dual, "_lft_loc_tcp_rotmat", np.eye(3))
-
-        d = robot_dual._delegator
-        d._loc_tcp_pos = tcp_pos.copy()
-        d.loc_tcp_pos = tcp_pos.copy()
-        d._loc_tcp_rotmat = tcp_rot.copy()
-        d.loc_tcp_rotmat = tcp_rot.copy()
 
 
 

@@ -11,14 +11,14 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
 sys.path.insert(0, REPO_ROOT)
 
-def ik_tcp_via_flange(robot, p_tcp_tgt, R_tcp_tgt, seed):
+def ik_tcp_via_flange(robot, p_tcp_base, R_tcp_base, seed):
     # 0) 保存真实 flange->tcp
     p_ft = robot._loc_tcp_pos.copy()
     R_ft = robot._loc_tcp_rotmat.copy()
 
     # 1) 计算 flange 目标（用“真实TCP”做换算）
-    R_flg_tgt = R_tcp_tgt @ R_ft.T
-    p_flg_tgt = p_tcp_tgt - R_flg_tgt @ p_ft
+    R_flg_base = R_tcp_base @ R_ft.T
+    p_flg_base = p_tcp_base - R_flg_base @ p_ft
 
     # 2) 临时把 TCP 置零：强制 IK/FK 都以 flange 为末端
     robot._loc_tcp_pos = np.zeros(3)
@@ -26,7 +26,7 @@ def ik_tcp_via_flange(robot, p_tcp_tgt, R_tcp_tgt, seed):
     robot._is_gl_tcp_delayed = True
 
     # 3) IK（现在 tgt_pos/tgt_rotmat 明确就是 flange 目标）
-    q = robot.ik(tgt_pos=p_flg_tgt, tgt_rotmat=R_flg_tgt, seed_jnt_values=seed)
+    q = robot.ik(tgt_pos=p_flg_base, tgt_rotmat=R_flg_base, seed_jnt_values=seed)
 
     # 4) 恢复真实 TCP
     robot._loc_tcp_pos = p_ft

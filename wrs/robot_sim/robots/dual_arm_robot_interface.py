@@ -175,11 +175,21 @@ class DualArmRobotInterface(ri.RobotInterface):
         author: weiwei
         date: 20240307
         """
-        collision_info = self.cc.is_collided(obstacle_list=obstacle_list,
-                                             other_robot_list=other_robot_list,
-                                             toggle_contacts=toggle_contacts,
-                                             toggle_dbg=toggle_dbg)
-        return collision_info
+        if self.cc is None:
+            if toggle_contacts:
+                return False, []  # 如果你调用方期待 contacts 列表
+            return False
+
+        return self.cc.is_collided(
+            obstacle_list=obstacle_list,
+            other_robot_list=other_robot_list,
+            toggle_contacts=toggle_contacts,
+            toggle_dbg=toggle_dbg
+        )
+        # collision_info = self.cc.is_collided(obstacle_list=obstacle_list,
+        #                                      other_robot_list=other_robot_list,
+        #                                      toggle_contacts=toggle_contacts,
+        #                                      toggle_dbg=toggle_dbg)
 
     def toggle_off_eecd(self):
         if self._delegator is None:
